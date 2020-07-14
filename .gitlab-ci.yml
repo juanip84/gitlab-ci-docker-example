@@ -1,0 +1,80 @@
+image: docker:18.09.7
+
+variables:
+  REPOSITORY_URL: account_id.dkr.ecr.us-west-1.amazonaws.com/ecr-name
+  REGION: us-west-1
+  CLUSTER_NAME: cluster-name
+  SERVICE_STAGING: ecs-staging-service-name
+  SERVICE_PROD: ecs-prod-service-name
+  TAG_STAGING: latest_staging
+  TAG_PROD: latest_prod
+  aws_access_key_id: $AWS_ACCESS_KEY_ID
+  aws_secret_access_key: $AWS_SECRET_ACCESS_KEY
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: overlay2
+  #DOCKER_HOST: tcp://docker:2375
+services:
+- docker:18.09.7-dind
+
+before_script:
+  - apk add --no-cache curl jq python3 py-pip
+  - pip install awscli
+  - apk update && apk add git
+  - IMAGE_TAG="$(echo $CI_COMMIT_SHA | head -c 8)"
+  - VERSION="$(git describe --tags --dirty)"
+
+stages:
+  - build
+  - deploy
+
+build-stg:
+  stage: build
+  script:
+    - echo "Starting STAGING build process"
+    - $(aws ecr get-login --no-include-email --region $REGION)
+    - echo "Building image..."
+    - docker build -f ./Dockerfile --target production-stage -t $REPOSITORY_URL:$TAG_STAGING .
+    - echo "Tagging image..."
+    - docker tag $REPOSITORY_URL:$TAG_STAGING $REPOSITORY_URL:$IMAGE_TAG
+    - echo "Pushing image..."
+    - docker push $REPOSITORY_URL:$TAG_STAGING
+    - docker push $REPOSITORY_URL:$IMAGE_TAG
+  only:
+    - develop
+    - release
+    - staging
+
+deploy-stg:
+  stage: deploy
+  script:
+    - echo "Starting STAGING deploy process"
+    - echo "Updating the service..."
+    - aws ecs update-service --region $REGION --cluster $CLUSTER_NAME --service $SERVICE_STAGING --force-new-deployment
+  only:
+    - develop
+    - release
+    - staging
+
+build-prod:
+  stage: build
+  script:
+    - echo "Starting PROD build process"
+    - $(aws ecr get-login --no-include-email --region $REGION)
+    - echo "Building image..."
+    - docker build -f ./Dockerfile --target production-stage -t $REPOSITORY_URL:$TAG_PROD .
+    - echo "Tagging image..."
+    - docker tag $REPOSITORY_URL:$TAG_PROD $REPOSITORY_URL:$VERSION
+    - echo "Pushing image..."
+    - docker push $REPOSITORY_URL:$TAG_PROD
+    - docker push $REPOSITORY_URL:$VERSION
+  only:
+    - master
+
+deploy-prod:
+  stage: deploy
+  script:
+    - echo "Starting PROD deploy process"
+    - echo "Updating the service..."
+    - aws ecs update-service --region $REGION --cluster $CLUSTER_NAME --service $SERVICE_PROD --force-new-deployment
+  only:
+    - master
